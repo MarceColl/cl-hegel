@@ -2,7 +2,7 @@
 
 (define-condition property-failed (error)
   ((name :initarg :name :reader property-failed-name)
-   (counterexample :initarg :counterexample :reader property-failed-counterexample)
+   (counterexample :initarg :counterexample :initform nil :reader property-failed-counterexample)
    (seed :initarg :seed :reader property-failed-seed)
    (test-cases-run :initarg :test-cases-run :reader property-failed-test-cases-run))
   (:report (lambda (c stream)
@@ -15,11 +15,9 @@
 (define-condition invalid-test-case (condition)
   ())
 
-(define-condition hegel-connection-error (error)
-  ((message :initarg :message :reader hegel-connection-error-message))
-  (:report (lambda (c stream)
-             (format stream "Hegel connection error: ~A"
-                     (hegel-connection-error c)))))
+(define-condition test-aborted (condition)
+  ())
+
 
 (defstruct test-result
   (passed nil :type boolean)

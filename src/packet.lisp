@@ -24,14 +24,13 @@
 (defun compute-checksum (bytes)
   "Compute CRC32 over a byte vector, returning a uint32."
   (let* ((simple-bytes (coerce bytes '(simple-array (unsigned-byte 8) (*))))
-         (digest (ironclad:make-digest :crc32))
-         (result (progn
-                   (ironclad:update-digest digest simple-bytes)
-                   (ironclad:produce-digest digest))))
-    (logior (ash (aref result 0) 24)
-            (ash (aref result 1) 16)
-            (ash (aref result 2) 8)
-            (aref result 3))))
+         (digest (ironclad:make-digest :crc32)))
+    (ironclad:update-digest digest simple-bytes)
+    (let ((result (ironclad:produce-digest digest)))
+      (logior (ash (aref result 0) 24)
+              (ash (aref result 1) 16)
+              (ash (aref result 2) 8)
+              (aref result 3)))))
 
 (defun write-hegel-packet (stream pkt)
   "Write PKT to STREAM with checksum and terminator."

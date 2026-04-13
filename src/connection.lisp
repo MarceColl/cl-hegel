@@ -1,5 +1,8 @@
 (in-package #:hegel)
 
+(defvar *connection* nil
+  "The current Hegel connection. Bind with with-connection or set directly.")
+
 (defstruct (connection (:constructor %make-connection))
   (output nil)  ; binary stream we write to (server's stdin)
   (input nil)   ; binary stream we read from (server's stdout)
@@ -54,12 +57,10 @@ Respects HEGEL_SERVER_COMMAND env var if set."
     (perform-handshake *connection*))
   *connection*)
 
-(defmacro with-connection ((&key server-command) &body body)
+(defmacro with-connection (() &body body)
   "Execute BODY with a fresh hegel-core connection bound to *connection*."
   (let ((conn (gensym "CONN")))
-    `(let* ((,conn (let (,@(when server-command
-                             `((*hegel-server-command* ,server-command))))
-                     (start-hegel-core)))
+    `(let* ((,conn (start-hegel-core))
             (*connection* ,conn))
        (unwind-protect
             (progn

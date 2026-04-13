@@ -102,7 +102,7 @@ Per-stream msg-ids: control 1=run_test; tc-stream-2 1=gen,2=mark; tc-stream-4 1=
 (test run-property-passing
   "A property that always passes returns a successful test-result"
   (let* ((conn (make-mock-connection (build-passing-responses 42))))
-    (setf (hegel::connection-handshake-done-p conn) t)
+    (setf (connection-handshake-done-p conn) t)
     (let ((hegel:*connection* conn)
           (captured nil))
       (let ((result (run-property "always passes"
@@ -116,7 +116,7 @@ Per-stream msg-ids: control 1=run_test; tc-stream-2 1=gen,2=mark; tc-stream-4 1=
 (test run-property-failing-signals-condition
   "A failing property signals property-failed with counterexample"
   (let* ((conn (make-mock-connection (build-failing-responses -1))))
-    (setf (hegel::connection-handshake-done-p conn) t)
+    (setf (connection-handshake-done-p conn) t)
     (let ((hegel:*connection* conn))
       (handler-case
           (progn
@@ -134,7 +134,7 @@ Per-stream msg-ids: control 1=run_test; tc-stream-2 1=gen,2=mark; tc-stream-4 1=
 (test assume-skips-invalid-test-cases
   "assume signals invalid-test-case which the runner catches"
   (let* ((conn (make-mock-connection (build-passing-responses 42))))
-    (setf (hegel::connection-handshake-done-p conn) t)
+    (setf (connection-handshake-done-p conn) t)
     (let ((hegel:*connection* conn))
       ;; assume with true should not skip
       (let ((result (run-property "assume true"

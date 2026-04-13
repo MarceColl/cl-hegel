@@ -1,5 +1,9 @@
 (in-package #:hegel/tests)
 
+(def-suite packet-suite
+  :description "Packet wire format tests"
+  :in hegel-suite)
+
 (in-suite packet-suite)
 
 ;;; Bit manipulation helpers

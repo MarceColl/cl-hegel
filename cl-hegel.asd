@@ -1,5 +1,5 @@
 (asdf:defsystem #:cl-hegel
-  :depends-on (#:lisp-binary #:ironclad #:cbor)
+  :depends-on (#:lisp-binary #:ironclad #:cbor #:flexi-streams)
   :serial t
   :components ((:module "src"
                 :components

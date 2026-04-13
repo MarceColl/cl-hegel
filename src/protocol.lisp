@@ -1,14 +1,21 @@
 (in-package #:hegel)
 
+(defun convert-value (val)
+  "Convert a value for CBOR encoding: alists become hash tables, plain lists become vectors."
+  (cond
+    ((and (consp val) (consp (car val)) (stringp (caar val)))
+     (alist-to-hash-table val))
+    ((consp val)
+     (map 'vector #'convert-value val))
+    (t val)))
+
 (defun alist-to-hash-table (alist)
-  "Convert an alist with string keys to a hash table for CBOR encoding."
+  "Convert an alist with string keys to a hash table for CBOR encoding.
+Recursively converts nested alists to hash tables and plain lists to vectors."
   (let ((ht (make-hash-table :test #'equal)))
     (dolist (pair alist ht)
       (setf (gethash (car pair) ht)
-            (let ((val (cdr pair)))
-              (if (and (listp val) (consp (car val)) (stringp (caar val)))
-                  (alist-to-hash-table val)
-                  val))))))
+            (convert-value (cdr pair))))))
 
 (defun encode-cbor (alist)
   "Encode an alist as CBOR bytes (via hash table)."
@@ -18,11 +25,14 @@
             '(simple-array (unsigned-byte 8) (*)))))
 
 (defun hegel-tag-reader (tag data)
-  "Handle Hegel-specific CBOR tags. Tag 91 = UTF-8 string with surrogates."
+  "Handle Hegel-specific CBOR tags. Tag 91 = WTF-8 string (UTF-8 allowing surrogates)."
   (case tag
-    (91 (flexi-streams:octets-to-string
-         (coerce data '(simple-array (unsigned-byte 8) (*)))
-         :external-format :utf-8))
+    (91 (let ((bytes (coerce data '(simple-array (unsigned-byte 8) (*)))))
+          (handler-case
+              (flexi-streams:octets-to-string bytes :external-format :utf-8)
+            (error ()
+              ;; WTF-8 with lone surrogates — fall back to latin-1 for lossless byte→char
+              (flexi-streams:octets-to-string bytes :external-format :latin-1)))))
     (t data)))
 
 (defun decode-cbor (bytes)
@@ -84,13 +94,10 @@ Server-initiated events received while waiting are queued in pending-events."
                            :payload payload)))
     (write-hegel-packet (connection-output conn) pkt)))
 
-(defun send-reply (conn stream-id orig-message-id data)
-  "Send a CBOR-encoded reply to a server request."
-  (protocol-log "[send-reply] stream=~A orig-msg=~A data=~A~%" stream-id orig-message-id data)
-  (let* ((cbor:*use-stringrefs* nil)
-         (cbor:*use-sharedrefs* nil)
-         (payload (coerce (cbor:encode data)
-                          '(simple-array (unsigned-byte 8) (*))))
+(defun send-reply (conn stream-id orig-message-id reply-alist)
+  "Send a CBOR-encoded reply to a server request. REPLY-ALIST is encoded as CBOR."
+  (protocol-log "[send-reply] stream=~A orig-msg=~A data=~A~%" stream-id orig-message-id reply-alist)
+  (let* ((payload (encode-cbor reply-alist))
          (pkt (make-packet :stream-id stream-id
                            :message-id (make-reply-id orig-message-id)
                            :payload-length (length payload)

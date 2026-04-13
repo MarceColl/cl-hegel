@@ -1,17 +1,17 @@
 (in-package #:hegel)
 
-(defvar *connection* nil
-  "The current Hegel connection. Bind with with-connection or set directly.")
-
 (defvar *current-stream-id* nil
   "Stream ID for the current test case. Bound by the runner during test execution.")
 
 (defun generate (schema)
-  "Generate a value from SCHEMA. Must be called within a run-property body."
+  "Generate a value from SCHEMA. Must be called within a run-property body.
+Signals TEST-ABORTED if hegel-core returns an error (StopTest, Overflow, etc)."
   (let ((result (send-command *connection* *current-stream-id*
                               `(("command" . "generate")
                                 ("schema" . ,schema)))))
-    (cdr (assoc "result" result :test #'string=))))
+    (when (msg-field result "type")
+      (signal 'test-aborted))
+    (msg-field result "result")))
 
 (defun assume (predicate)
   "Skip this test case if PREDICATE is false."
@@ -26,26 +26,28 @@
 PKT-STREAM-ID/PKT-MSG-ID are from the test_case packet (for the reply).
 TC-STREAM-ID is the CBOR stream_id (for generate/mark_complete commands)."
   ;; Send test_case_reply on the run stream (where the event arrived)
-  (send-reply conn pkt-stream-id pkt-msg-id
-              (alist-to-hash-table '(("result" . nil))))
+  (send-reply conn pkt-stream-id pkt-msg-id '(("result" . nil)))
   ;; Run body, determine status — commands go on tc-stream-id
   (let ((*current-stream-id* tc-stream-id)
         (status "VALID")
-        (origin nil))
+        (origin nil)
+        (aborted nil))
     (handler-case
         (handler-case (funcall body-fn)
+          (test-aborted ()
+            (setf aborted t))
           (invalid-test-case ()
             (setf status "INVALID")))
       (error (e)
         (setf status "INTERESTING"
               origin (princ-to-string e))))
-    ;; Send mark_complete on test case stream
-    (send-command conn tc-stream-id
-                  `(("command" . "mark_complete")
-                    ("status" . ,status)
-                    ,@(when origin `(("origin" . ,origin)))))
-    ;; Send stream_close on test case stream
-    (send-stream-close conn tc-stream-id)
+    ;; Skip mark_complete and stream_close if hegel-core already closed the stream
+    (unless aborted
+      (send-command conn tc-stream-id
+                    `(("command" . "mark_complete")
+                      ("status" . ,status)
+                      ,@(when origin `(("origin" . ,origin)))))
+      (send-stream-close conn tc-stream-id))
     status))
 
 (defun run-property (name body-fn &key (test-cases 100) seed)
@@ -64,45 +66,38 @@ Automatically creates a connection if *connection* is nil."
                     ("database_key" . ,(flexi-streams:string-to-octets
                                         name :external-format :utf-8))))
     ;; Phase 2: Test case loop
-    (let ((counterexample nil)
-          (final-counterexample nil))
-      (loop
-        (multiple-value-bind (msg stream-id message-id) (read-message conn)
-          (let ((event (msg-field msg "event")))
-            (cond
-              ;; test_done: break out
-              ((string= event "test_done")
-               (let* ((results (msg-field msg "results"))
-                      (passed (msg-field results "passed"))
-                      (result (make-test-result
-                               :passed (if passed t nil)
-                               :test-cases (msg-field results "test_cases")
-                               :valid-test-cases (msg-field results "valid_test_cases")
-                               :invalid-test-cases (msg-field results "invalid_test_cases")
-                               :interesting-test-cases (msg-field results "interesting_test_cases")
-                               :seed (msg-field results "seed")
-                               :counterexample final-counterexample
-                               :error (msg-field results "error"))))
-                 ;; Send test_done reply
-                 (send-reply conn stream-id message-id
-                             (alist-to-hash-table '(("result" . t))))
-                 ;; Handle final replays — one per interesting test case
-                 (let ((n-interesting (or (msg-field results "interesting_test_cases") 0)))
-                   (dotimes (_ n-interesting)
-                     (multiple-value-bind (replay-msg replay-sid replay-mid)
-                         (read-message conn)
-                       (let ((replay-tc-sid (msg-field replay-msg "stream_id")))
-                         (run-test-case conn body-fn replay-sid replay-mid replay-tc-sid))))
-                   (unless passed
-                     (signal 'property-failed
-                             :name name
-                             :counterexample final-counterexample
-                             :seed (test-result-seed result)
-                             :test-cases-run (test-result-test-cases result))))
-                 (return result)))
-              ;; test_case: run it
-              ((string= event "test_case")
-               (let ((tc-stream-id (msg-field msg "stream_id"))
-                     (is-final (msg-field msg "is_final")))
-                 (declare (ignore is-final))
-                 (run-test-case conn body-fn stream-id message-id tc-stream-id))))))))))
+    (loop
+      (multiple-value-bind (msg stream-id message-id) (read-message conn)
+        (let ((event (msg-field msg "event")))
+          (cond
+            ;; test_done: break out
+            ((string= event "test_done")
+             (let* ((results (msg-field msg "results"))
+                    (passed (msg-field results "passed"))
+                    (result (make-test-result
+                             :passed (if passed t nil)
+                             :test-cases (msg-field results "test_cases")
+                             :valid-test-cases (msg-field results "valid_test_cases")
+                             :invalid-test-cases (msg-field results "invalid_test_cases")
+                             :interesting-test-cases (msg-field results "interesting_test_cases")
+                             :seed (msg-field results "seed")
+                             :error (msg-field results "error"))))
+               ;; Send test_done reply
+               (send-reply conn stream-id message-id '(("result" . t)))
+               ;; Handle final replays — one per interesting test case
+               (let ((n-interesting (or (msg-field results "interesting_test_cases") 0)))
+                 (dotimes (_ n-interesting)
+                   (multiple-value-bind (replay-msg replay-sid replay-mid)
+                       (read-message conn)
+                     (let ((replay-tc-sid (msg-field replay-msg "stream_id")))
+                       (run-test-case conn body-fn replay-sid replay-mid replay-tc-sid))))
+                 (unless passed
+                   (signal 'property-failed
+                           :name name
+                           :seed (test-result-seed result)
+                           :test-cases-run (test-result-test-cases result))))
+               (return result)))
+            ;; test_case: run it
+            ((string= event "test_case")
+             (let ((tc-stream-id (msg-field msg "stream_id")))
+               (run-test-case conn body-fn stream-id message-id tc-stream-id)))))))))
