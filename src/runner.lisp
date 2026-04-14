@@ -50,6 +50,72 @@ TC-STREAM-ID is the CBOR stream_id (for generate/mark_complete commands)."
       (send-stream-close conn tc-stream-id))
     status))
 
+(defun unpack-uleb128 (buffer &optional (start 0))
+  "Returns (values value bytes-consumed)"
+  (let ((result 0)
+        (shift 0)
+        (idx start))
+    (loop
+      (let ((byte (aref buffer idx)))
+        (incf idx)
+        (setf result (logior result (ash (logand byte #x7f) shift)))
+        (incf shift 7)
+        (when (zerop (logand byte #x80))
+          (return (values result (- idx start))))))))
+
+(defun bytes-to-signed-integer (bytes)
+  (let* ((nbits (* 8 (length bytes)))
+         (unsigned (loop for b across bytes
+                         for shift from (- nbits 8) downto 0 by 8
+                         sum (ash b shift))))
+    (if (logbitp (1- nbits) unsigned)
+        (- unsigned (ash 1 nbits))
+        unsigned)))
+
+(defun choices-from-bytes (buffer)
+  (let ((parts '())
+        (idx 0)
+        (len (length buffer)))
+    (loop while (< idx len) do
+      (let* ((byte (aref buffer idx))
+             (tag  (ash byte -5))
+             (size (logand byte #b11111)))
+        (incf idx)
+        (if (= tag 0)
+            (push (not (zerop size)) parts)
+            (progn
+              (when (= size #b11111)
+                (multiple-value-bind (val offset)
+                    (unpack-uleb128 buffer idx)
+                  (setf size val)
+                  (incf idx offset)))
+              (let ((chunk (subseq buffer idx (+ idx size))))
+                (incf idx size)
+                (push (ecase tag
+                        (1 (progn
+                             (assert (= size 8) () "expected float64")
+                             (ieee-floats:decode-float64
+                              (nibbles:ub64ref/be chunk 0))))
+                        (2 (bytes-to-signed-integer chunk))
+                        (3 chunk)
+                        (4 (babel:octets-to-string chunk :encoding :utf-8)))
+                      parts))))))
+    (coerce (nreverse parts) 'vector)))
+
+(defun decode-failure (failure-blob)
+  (let ((b64-string (map 'string #'code-char failure-blob)))
+    (multiple-value-bind (decoded) (cl-base64:base64-string-to-usb8-array b64-string)
+      (let* ((prefix (aref decoded 0))
+             (rest (make-array (1- (length decoded))
+                    :element-type (array-element-type decoded)
+                    :displaced-to decoded
+                    :displaced-index-offset 1))
+             (decoded-bytes (if (= prefix 0) rest (error "Compressed payloads not supported yet"))))
+        (choices-from-bytes decoded-bytes)))))
+
+(defun decode-failures (failure-blobs)
+  (map 'list #'decode-failure failure-blobs))
+
 (defun run-property (name body-fn &key (test-cases 100) seed)
   "Run a property-based test. BODY-FN is a zero-argument function that calls GENERATE
 and signals errors on failure. Returns a TEST-RESULT. Signals PROPERTY-FAILED on failure.
@@ -74,6 +140,7 @@ Automatically creates a connection if *connection* is nil."
             ((string= event "test_done")
              (let* ((results (msg-field msg "results"))
                     (passed (msg-field results "passed"))
+                    (counterexample (decode-failures (msg-field results "failure_blobs")))
                     (result (make-test-result
                              :passed (if passed t nil)
                              :test-cases (msg-field results "test_cases")
@@ -81,10 +148,11 @@ Automatically creates a connection if *connection* is nil."
                              :invalid-test-cases (msg-field results "invalid_test_cases")
                              :interesting-test-cases (msg-field results "interesting_test_cases")
                              :seed (msg-field results "seed")
+                             :counterexample counterexample
                              :error (msg-field results "error"))))
                ;; Send test_done reply
                (send-reply conn stream-id message-id '(("result" . t)))
-               ;; Handle final replays — one per interesting test case
+               ;; Handle final replays, one per interesting test case
                (let ((n-interesting (or (msg-field results "interesting_test_cases") 0)))
                  (dotimes (_ n-interesting)
                    (multiple-value-bind (replay-msg replay-sid replay-mid)
@@ -95,6 +163,7 @@ Automatically creates a connection if *connection* is nil."
                    (signal 'property-failed
                            :name name
                            :seed (test-result-seed result)
+                           :counterexample counterexample
                            :test-cases-run (test-result-test-cases result))))
                (return result)))
             ;; test_case: run it

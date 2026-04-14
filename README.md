@@ -12,6 +12,8 @@ This software is BETA quality, layered on top of a beta release of Hegel, so exp
 
 ## Usage
 
+### Raw
+
 ```lisp
 (ql:quickload :cl-hegel)
 
@@ -25,28 +27,25 @@ This software is BETA quality, layered on top of a beta release of Hegel, so exp
 
 `run-property` spawns `hegel-core` on first use, returns a `test-result` on success, signals `property-failed` on failure.
 
-## Generators
+### Rove
+
+We also have a (fairly barebones) integration with Rove. Will be improved over time.
 
 ```lisp
-(gen-integer &key min-value max-value)
-(gen-boolean)
-(gen-string &key min-size max-size)
-(gen-list elements &key min-size max-size)
-(gen-one-of &rest schemas)
-(gen-constant value)
-(gen-sampled-from &rest values)
+(ql:quickload :cl-hegel.rove)
+
+(defun wrong-add (a b)
+  (if (= a 0)
+      (+ b 1)
+      (+ a b)))
+
+(deftest wrong-add
+   (property "wrong-add works like +" ((a (integers))
+                                       (b (integers)))
+       (assert (= (wrong-add a b)) (+ a b)) ))
+   
 ```
 
-Generators compose: `(gen-list (gen-one-of (gen-integer) (gen-string)))`.
+### Other testing libs
 
-## Filtering
-
-`assume` skips test cases that don't meet a precondition:
-
-```lisp
-(hegel:assume (evenp x))
-```
-
-## Failure and replay
-
-`property-failed` carries `name`, `seed`, and `test-cases-run`. Pass `:seed` back to `run-property` to reproduce a failure. Hegel's database automatically replays known failures on subsequent runs.
+Not yet integrated, feel free to open a PR.
